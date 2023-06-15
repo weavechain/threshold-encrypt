@@ -31,8 +31,6 @@ dependencies {
     compileOnly("org.projectlombok:lombok:1.18.28")
     annotationProcessor("org.projectlombok:lombok:1.18.28")
 
-    implementation("org.slf4j:slf4j-api:2.0.0")
-
     implementation("org.bouncycastle:bcpkix-jdk18on:1.72")
     implementation("com.codahale:shamir:0.7.0")
 
