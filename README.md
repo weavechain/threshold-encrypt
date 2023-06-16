@@ -34,6 +34,8 @@ implementation("com.weavechain:threshold-encrypt:1.0")
 
 #### Sample
 
+Number encryption
+
 ```java
 int T = 3;
 int N = 5;
@@ -44,6 +46,31 @@ ThresholdEncSecpParams params = tsig.generate(null);
 List<byte[]> partialShares = params.getPrivateShares().subList(0, 3);
 
 boolean check = ThresholdEncSecp.verify(partialShares.get(0), 1, params.getPublicShares());
+System.out.println(check ? "Success" : "Fail");
+
+BigInteger value = new BigInteger("1234567890");
+byte[] enc = ThresholdEncSecp.encrypt(params.getPublicKey(), value);
+
+byte[] privateKey = tsig.reconstruct(partialShares);
+BigInteger decoded = ThresholdEncSecp.decrypt(privateKey, enc);
+
+boolean match = Objects.equals(decoded, value);
+System.out.println(match ? "Success" : "Fail");
+```
+
+Message encryption
+
+```java
+int T = 3;
+int N = 5;
+ThresholdEncSecp tsig = new ThresholdEncSecp(T, N);
+
+ThresholdEncSecpParams params = tsig.generate(null);
+
+List<byte[]> partialShares = params.getPrivateShares().subList(0, 3);
+
+boolean check = ThresholdEncSecp.verify(partialShares.get(0), 1, params.getPublicShares());
+System.out.println(check ? "Success" : "Fail");
 
 String value = "test message to be decrypted by t out of n recipients";
 byte[] enc = ThresholdEncSecp.encrypt(params.getPublicKey(), value);

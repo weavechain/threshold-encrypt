@@ -8,6 +8,12 @@ import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.math.ec.ECPoint;
 import org.bouncycastle.math.ec.custom.sec.SecP256K1Curve;
 
+import javax.crypto.Cipher;
+import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.IvParameterSpec;
+import javax.crypto.spec.PBEKeySpec;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -17,13 +23,12 @@ import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.security.spec.ECGenParameterSpec;
+import java.security.spec.KeySpec;
 import java.util.*;
 
 public class ThresholdEncSecp {
 
     private static final boolean DEFAULT_USE_SHAMIR = false;
-
-    private static final int CHUNK_SIZE = 31;
 
     private final int t;
 
@@ -45,7 +50,11 @@ public class ThresholdEncSecp {
 
     private static int cachedSize;
 
-    private static final int MAX_LEN = 512 * 1024 * 1024;
+    private static final int MAX_LEN = 33;
+
+    private static final String KEY_FACTORY = "PBKDF2WithHmacSHA256";
+
+    private static final String ALGORITHM = "ChaCha20-Poly1305";
 
     private static final ThreadLocal<SecureRandom> RANDOM = ThreadLocal.withInitial(SecureRandom::new);
 
@@ -66,9 +75,9 @@ public class ThresholdEncSecp {
 
     public static BigInteger getBigInt(PrivateKey key) {
         if (key instanceof BCECPrivateKey) {
-            return new BigInteger(((BCECPrivateKey) key).getD().toByteArray());
+            return new BigInteger(1, ((BCECPrivateKey) key).getD().toByteArray());
         } else {
-            return key != null ? new BigInteger(key.getEncoded()) : null;
+            return key != null ? new BigInteger(1, key.getEncoded()) : null;
         }
     }
 
@@ -186,38 +195,15 @@ public class ThresholdEncSecp {
     }
 
     private static void serialize(byte[] data, ByteArrayOutputStream output) throws IOException {
-        output.write(longBytes(data.length));
+        output.write(shortBytes((short)data.length));
         output.write(data);
     }
 
-    private static byte[] longBytes(long value) {
-        ByteBuffer longBuffer = ByteBuffer.allocate(Long.BYTES);
+    private static byte[] shortBytes(short value) {
+        ByteBuffer longBuffer = ByteBuffer.allocate(Short.BYTES);
         longBuffer.order(ByteOrder.LITTLE_ENDIAN);
-        longBuffer.putLong(value);
+        longBuffer.putShort(value);
         return longBuffer.array();
-    }
-
-    public static byte[] encrypt(byte[] publicKey, String value) throws IOException {
-        byte[] data = value.getBytes(StandardCharsets.UTF_8);
-
-        List<byte[]> chunks = new ArrayList<>();
-        for (int i = 0; i < data.length; i += CHUNK_SIZE) {
-            chunks.add(Arrays.copyOfRange(data, i, Math.min(i + CHUNK_SIZE, data.length)));
-        }
-
-        BigInteger k = new BigInteger(ORDER.bitLength(), random()).mod(ORDER);
-        ECPoint P = CURVE_SPEC.getG().multiply(k).normalize();
-        ECPoint pub = CURVE_SPEC.getCurve().decodePoint(publicKey);
-        ECPoint H = pub.multiply(k).normalize();
-
-        ByteArrayOutputStream result = new ByteArrayOutputStream();
-        serialize(P.getEncoded(true), result);
-        for (byte[] chunk : chunks) {
-            BigInteger v = new BigInteger(1, chunk);
-            BigInteger enc = v.multiply(H.getYCoord().toBigInteger()).mod(ORDER);
-            serialize(enc.toByteArray(), result);
-        }
-        return result.toByteArray();
     }
 
     public static byte[] encrypt(byte[] publicKey, BigInteger value) throws IOException {
@@ -239,15 +225,15 @@ public class ThresholdEncSecp {
 
         ECPoint P = null;
         while (buffer.hasRemaining()) {
-            int len = (int) buffer.getLong();
-            if (len < MAX_LEN) {
+            int len = buffer.getShort();
+            if (len <= MAX_LEN) {
                 byte[] chunk = new byte[len];
                 buffer.get(chunk);
 
                 if (P == null) {
                     P = CURVE_SPEC.getCurve().decodePoint(chunk);
                 } else {
-                    BigInteger enc = new BigInteger(chunk);
+                    BigInteger enc = new BigInteger(1, chunk);
 
                     ECPoint H = P.multiply(new BigInteger(1, privateKey)).normalize();
                     return enc.multiply(H.getYCoord().toBigInteger().modInverse(ORDER)).mod(ORDER);
@@ -258,31 +244,107 @@ public class ThresholdEncSecp {
         return null;
     }
 
+    public static byte[] encrypt(byte[] publicKey, String value) throws IllegalArgumentException {
+        try {
+            byte[] salt = new byte[32];
+            random().nextBytes(salt);
+            salt = get32Bytes(new BigInteger(salt).abs().mod(ORDER).toByteArray());
+
+            SecretKeyFactory factory = SecretKeyFactory.getInstance(KEY_FACTORY);
+            KeySpec spec = new PBEKeySpec(null, salt, 65536, 256);
+            SecretKey tmp = factory.generateSecret(spec);
+            SecretKeySpec secretKey = new SecretKeySpec(tmp.getEncoded(), ALGORITHM);
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+
+            byte[] iv = new byte[12];
+            random().nextBytes(iv);
+            IvParameterSpec ivspec = new IvParameterSpec(iv);
+
+            cipher.init(Cipher.ENCRYPT_MODE, secretKey, ivspec);
+            byte[] enc = cipher.doFinal(value.getBytes(StandardCharsets.UTF_8));
+
+            BigInteger k = new BigInteger(ORDER.bitLength(), random()).mod(ORDER);
+            ECPoint P = CURVE_SPEC.getG().multiply(k).normalize();
+            ECPoint pub = CURVE_SPEC.getCurve().decodePoint(publicKey);
+            ECPoint H = pub.multiply(k).normalize();
+
+            ByteArrayOutputStream result = new ByteArrayOutputStream();
+            result.write(iv);
+            serialize(P.getEncoded(true), result);
+
+            BigInteger v = new BigInteger(salt);
+            BigInteger encoded = v.multiply(H.getYCoord().toBigInteger()).mod(ORDER);
+            serialize(encoded.toByteArray(), result);
+
+            result.write(enc);
+
+            return result.toByteArray();
+        } catch (Exception e) {
+            throw new IllegalArgumentException(e);
+        }
+    }
+
+    private static byte[] get32Bytes(byte[] bytes) {
+        if (bytes.length == 33) {
+            bytes = Arrays.copyOfRange(bytes, 1, bytes.length);
+        } else if (bytes.length < 32) {
+            byte[] out = new byte[32];
+            System.arraycopy(bytes, 0, out, 32 - bytes.length, bytes.length);
+            bytes = out;
+        }
+        return bytes;
+    }
+
     public static String decryptString(byte[] privateKey, byte[] data) throws IOException {
-        ByteArrayOutputStream result = new ByteArrayOutputStream();
+        try {
+            ByteArrayOutputStream result = new ByteArrayOutputStream();
 
-        ByteBuffer buffer = ByteBuffer.wrap(data);
-        buffer.order(ByteOrder.LITTLE_ENDIAN);
-        ECPoint P = null;
-        while (buffer.hasRemaining()) {
-            int len = (int) buffer.getLong();
-            if (len < MAX_LEN) {
-                byte[] chunk = new byte[len];
-                buffer.get(chunk);
+            ByteBuffer buffer = ByteBuffer.wrap(data);
+            buffer.order(ByteOrder.LITTLE_ENDIAN);
 
-                if (P == null) {
-                    P = CURVE_SPEC.getCurve().decodePoint(chunk);
-                } else {
-                    BigInteger enc = new BigInteger(chunk);
+            byte[] iv = new byte[12];
+            buffer.get(iv);
 
-                    ECPoint H = P.multiply(new BigInteger(1, privateKey)).normalize();
-                    BigInteger val = enc.multiply(H.getYCoord().toBigInteger().modInverse(ORDER)).mod(ORDER);
-                    result.write(val.toByteArray());
+            ECPoint P = null;
+            while (buffer.hasRemaining()) {
+                int len = buffer.getShort();
+                if (len <= MAX_LEN) {
+                    byte[] chunk = new byte[len];
+                    buffer.get(chunk);
 
+                    if (P == null) {
+                        P = CURVE_SPEC.getCurve().decodePoint(chunk);
+                    } else {
+                        BigInteger enc = new BigInteger(1, chunk);
+
+                        ECPoint H = P.multiply(new BigInteger(1, privateKey)).normalize();
+                        BigInteger val = enc.multiply(H.getYCoord().toBigInteger().modInverse(ORDER)).mod(ORDER);
+                        result.write(get32Bytes(val.toByteArray()));
+                        break;
+                    }
                 }
             }
-        }
 
-        return result.toString(StandardCharsets.UTF_8);
+            ByteBuffer input = ByteBuffer.wrap(result.toByteArray());
+            byte[] salt = new byte[input.remaining()];
+            input.get(salt);
+
+            byte[] encoded = new byte[buffer.remaining()];
+            buffer.get(encoded);
+
+            IvParameterSpec ivspec = new IvParameterSpec(iv);
+
+            SecretKeyFactory factory = SecretKeyFactory.getInstance(KEY_FACTORY);
+            KeySpec spec = new PBEKeySpec(null, salt, 65536, 256);
+            SecretKey tmp = factory.generateSecret(spec);
+            SecretKeySpec secretKey = new SecretKeySpec(tmp.getEncoded(), ALGORITHM);
+
+            Cipher cipher = Cipher.getInstance(ALGORITHM);
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, ivspec);
+
+            return new String(cipher.doFinal(encoded), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            throw new IllegalArgumentException(e);
+        }
     }
 }
