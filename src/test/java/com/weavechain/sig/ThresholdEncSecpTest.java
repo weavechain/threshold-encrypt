@@ -1,8 +1,6 @@
-package com.weavechain.node.sig;
+package com.weavechain.sig;
 
 import com.google.common.truth.Truth;
-import com.weavechain.sig.ThresholdEncSecp;
-import com.weavechain.sig.ThresholdEncSecpParams;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
