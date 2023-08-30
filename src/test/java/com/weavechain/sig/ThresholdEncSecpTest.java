@@ -10,6 +10,7 @@ import org.testng.annotations.Test;
 import java.math.BigInteger;
 import java.security.Security;
 import java.util.List;
+import java.util.Set;
 
 public class ThresholdEncSecpTest {
 
@@ -25,6 +26,7 @@ public class ThresholdEncSecpTest {
         ThresholdEncSecpParams params = tsig.generate(null);
 
         List<byte[]> partialShares = params.getPrivateShares().subList(0, 3);
+        Set<Integer> nodes = Set.of(0, 1, 2);
 
         boolean check = ThresholdEncSecp.verify(partialShares.get(0), 1, params.getPublicShares());
         Truth.assertThat(check).isTrue();
@@ -34,7 +36,7 @@ public class ThresholdEncSecpTest {
         byte[] enc = ThresholdEncSecp.encrypt(params.getPublicKey(), value);
 
         //value decrypted by t out of n
-        byte[] privateKey = tsig.reconstruct(partialShares);
+        byte[] privateKey = tsig.reconstruct(partialShares, nodes);
         Truth.assertThat(privateKey).isEqualTo(params.getPrivateKey());
         BigInteger dec = ThresholdEncSecp.decrypt(privateKey, enc);
         Truth.assertThat(dec).isEqualTo(value);
@@ -46,7 +48,9 @@ public class ThresholdEncSecpTest {
 
         ThresholdEncSecpParams params = tsig.generate(null);
 
-        List<byte[]> partialShares = params.getPrivateShares().subList(0, 3);
+        List<byte[]> partialShares = params.getPrivateShares().subList(0, 2);
+        partialShares.add(params.getPrivateShares().get(4));
+        Set<Integer> nodes = Set.of(0, 1, 4);
 
         boolean check = ThresholdEncSecp.verify(partialShares.get(0), 1, params.getPublicShares());
         Truth.assertThat(check).isTrue();
@@ -54,7 +58,7 @@ public class ThresholdEncSecpTest {
         String value = "test message to be decrypted by t out of n recipients";
         byte[] enc = ThresholdEncSecp.encrypt(params.getPublicKey(), value);
 
-        byte[] privateKey = tsig.reconstruct(partialShares);
+        byte[] privateKey = tsig.reconstruct(partialShares, nodes);
         Truth.assertThat(privateKey).isEqualTo(params.getPrivateKey());
         String dec = ThresholdEncSecp.decryptString(privateKey, enc);
         Truth.assertThat(dec).isEqualTo(value);

@@ -16,7 +16,6 @@ import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -25,6 +24,7 @@ import java.security.*;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.KeySpec;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ThresholdEncSecp {
 
@@ -46,9 +46,7 @@ public class ThresholdEncSecp {
 
     private static final Object syncObj = new Object();
 
-    private static List<BigInteger> cachedCoef;
-
-    private static int cachedSize;
+    private static final ThreadLocal<Map<Set<Integer>, List<BigInteger>>> cachedCoef = ThreadLocal.withInitial(ConcurrentHashMap::new);
 
     private static final int MAX_LEN = 33;
 
@@ -150,7 +148,7 @@ public class ThresholdEncSecp {
         return check.equals(target);
     }
 
-    public byte[] reconstruct(List<byte[]> privateShares) {
+    public byte[] reconstruct(List<byte[]> privateShares, Set<Integer> nodes) {
         if (useShamir) {
             Map<Integer, byte[]> parts = new TreeMap<>();
             int i = 1;
@@ -160,36 +158,49 @@ public class ThresholdEncSecp {
             return new BigInteger(1, scheme.join(parts)).toByteArray();
         } else {
             BigInteger privateKey = BigInteger.ZERO;
+            List<BigInteger> coef = getLagrangeCoef(n, nodes);
+
+            List<Integer> sortedNodes = new ArrayList<>(nodes);
+            Collections.sort(sortedNodes);
+
             int size = privateShares.size();
-            List<BigInteger> coef = getLagrangeCoef(size);
-            for (int i = 1; i <= size; i++) {
-                privateKey = privateKey.add(new BigInteger(1, privateShares.get(i - 1)).multiply(coef.get(i - 1))).mod(ORDER);
+            for (int i = 0; i < size; i++) {
+                int index = sortedNodes.get(i);
+                BigInteger val = new BigInteger(1, privateShares.get(i)).multiply(coef.get(index));
+                privateKey = privateKey.add(val).mod(ORDER);
             }
             return privateKey.mod(ORDER).toByteArray();
         }
     }
 
-    public static List<BigInteger> getLagrangeCoef(int size) {
-        if (cachedCoef != null && cachedSize >= size) {
-            return cachedCoef;
+    public static List<BigInteger> getLagrangeCoef(int size, Set<Integer> nodes) {
+        List<BigInteger> coef = cachedCoef.get().get(nodes);
+        if (coef != null) {
+            return coef;
         }
 
         List<BigInteger> lagrangeCoef = new ArrayList<>();
         for (int i = 1; i <= size; i++) {
-            BigDecimal m = BigDecimal.ONE;
+            lagrangeCoef.add(BigInteger.ONE);
+        }
+
+        for (int i = 1; i <= size; i++) {
+            BigInteger prodDiff = BigInteger.ONE;
+            BigInteger factor = BigInteger.ONE;
             for (int j = 1; j <= size; j++) {
-                if (i != j) {
-                    m = m.multiply(BigDecimal.valueOf(j * 1.0 / (j - i)));
+                if (i != j && nodes.contains(j - 1)) {
+                    BigInteger dx = BigInteger.valueOf(j - i);
+                    factor = factor.multiply(BigInteger.valueOf(j));
+                    prodDiff = prodDiff.multiply(dx).mod(ORDER);
                 }
             }
-            lagrangeCoef.add(m.toBigInteger());
+
+            BigInteger inv = prodDiff.modInverse(ORDER);
+            lagrangeCoef.set(i - 1, factor.multiply(inv).mod(ORDER));
         }
 
         synchronized (syncObj) {
-            if (cachedSize < size) {
-                cachedCoef = lagrangeCoef;
-                cachedSize = size;
-            }
+            cachedCoef.get().put(nodes, lagrangeCoef);
         }
         return lagrangeCoef;
     }
